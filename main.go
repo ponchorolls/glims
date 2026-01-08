@@ -18,6 +18,7 @@ const (
 	stateNav           sessionState = iota // Moving through the list, pressing hotkeys
 	stateSearch                            // Typing into the fuzzy finder
 	stateAdd                               // Typing into the "Add Item" form
+	stateEdit                              // Edit state
 	stateDeleteConfirm                     // Delete confirmation state
 )
 
@@ -41,6 +42,7 @@ type model struct {
 	state          sessionState
 	focusIndex     int
 	db             *sql.DB
+	editTargetID   string // To know which record to UPDATE
 	deleteTargetID string
 }
 
@@ -80,6 +82,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSearch(msg)
 	case stateAdd:
 		return m.handleAdd(msg)
+	case stateEdit:
+		return m.handleEdit(msg)
 	case stateDeleteConfirm:
 		return m.handleDeleteConfirm(msg)
 	default: // This handles stateNav
@@ -109,6 +113,17 @@ func (m *model) handleNav(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.qtyInput.SetValue("")
 			m.textInput.Focus()
 			return m, nil
+		case "e":
+			currRow := m.table.SelectedRow()
+			if len(currRow) > 0 {
+				m.state = stateEdit
+				m.editTargetID = currRow[0]
+				m.textInput.SetValue(currRow[1]) // Name
+				m.qtyInput.SetValue(currRow[2])  // Qty
+				m.focusIndex = 0
+				m.textInput.Focus()
+				return m, nil
+			}
 		case "d":
 			currRow := m.table.SelectedRow()
 			if len(currRow) > 0 {
@@ -238,6 +253,57 @@ func (m *model) handleDeleteConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *model) handleEdit(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "enter":
+			name := m.textInput.Value()
+			qty := m.qtyInput.Value()
+
+			if name != "" {
+				// Update the database
+				_, _ = m.db.Exec("UPDATE inventory SET name = ?, qty = ? WHERE id = ?", name, qty, m.editTargetID)
+
+				// Refresh local state
+				m.inventory, _ = GetInventory(m.db)
+				m.table.SetRows(itemsToRows(m.inventory))
+			}
+			m.resetToNav()
+			return m, nil
+
+		case "tab", "up", "down":
+			if m.focusIndex == 0 {
+				m.focusIndex = 1
+				m.textInput.Blur()
+				m.qtyInput.Focus()
+			} else {
+				m.focusIndex = 0
+				m.qtyInput.Blur()
+				m.textInput.Focus()
+			}
+			return m, nil
+		}
+	}
+
+	if m.focusIndex == 0 {
+		m.textInput, cmd = m.textInput.Update(msg)
+	} else {
+		m.qtyInput, cmd = m.qtyInput.Update(msg)
+	}
+	return m, cmd
+}
+
+func itemsToRows(items []Item) []table.Row {
+	var rows []table.Row
+	for _, item := range items {
+		rows = append(rows, item.ToRow())
+	}
+	return rows
+}
+
 func (m *model) View() string {
 	// 1. Build the Status Bar (Dynamic based on State)
 	var statusLine string
@@ -253,9 +319,13 @@ func (m *model) View() string {
 			baseStyle.Render(m.table.View()),
 		)
 
-	case stateAdd:
-		statusLine = lipgloss.NewStyle().Background(green).Foreground(lipgloss.Color("0")).Bold(true).Render(" ADD ITEM ")
-		// Show the Form instead of the table
+	case stateEdit, stateAdd:
+		title := " ADD NEW ITEM "
+		if m.state == stateEdit {
+			title = " EDIT ITEM #" + m.editTargetID + " "
+		}
+		statusLine = lipgloss.NewStyle().Background(green).Foreground(lipgloss.Color("0")).Bold(true).Render(title)
+
 		currentView = fmt.Sprintf(
 			"\n  Product Name:\n  %s\n\n  Quantity:\n  %s\n\n  (enter to save • esc to cancel)",
 			m.textInput.View(),
@@ -282,7 +352,7 @@ func (m *model) View() string {
 		header,
 		statusLine,
 		currentView,
-		footerStyle.Render(" [/] Search • [n] New • [d] Delete • [esc] Reset • [q/ctrl+c] Quit"),
+		footerStyle.Render(" [/] Search • [n] New • [e] Edit • [d] Delete • [esc] Reset • [q/ctrl+c] Quit"),
 	)
 }
 
