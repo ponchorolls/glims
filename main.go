@@ -347,11 +347,8 @@ func (m *model) handleEdit(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if m.focusIndex == 0 {
-		m.inputs[0], cmd = m.inputs[0].Update(msg)
-	} else {
-		m.inputs[0], cmd = m.inputs[0].Update(msg)
-	}
+	m.inputs[m.focusIndex], cmd = m.inputs[m.focusIndex].Update(msg)
+
 	return m, cmd
 }
 
