@@ -41,6 +41,8 @@ type model struct {
 	focusIndex     int
 	editTargetID   string
 	deleteTargetID string
+	width          int
+	height         int
 }
 
 var (
@@ -78,6 +80,12 @@ func GetColumns(db *sql.DB) []table.Column {
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.table.SetHeight(m.height - 10)
+	}
 	// 1. Handle Global Keypresses (like Ctrl+C)
 	// We check if the message is a KeyMsg first
 	if kmsg, ok := msg.(tea.KeyMsg); ok {
@@ -121,20 +129,20 @@ func (m *model) handleNav(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.inputs[0].SetValue("")
 			m.inputs[0].Placeholder = "Search names, locations, etc..."
 			return m, nil
-		case "f":
+		case "ctrl+f":
 			m.state = stateAddField
 			m.inputs[0].SetValue("")
 			m.inputs[0].Focus()
 			m.inputs[0].Placeholder = "New Column Name"
 			return m, nil
-		case "n":
+		case "ctrl+n":
 			m.state = stateAdd
 			m.focusIndex = 0
 			m.inputs[0].SetValue("")
 			m.inputs[0].SetValue("")
 			m.inputs[0].Focus()
 			return m, nil
-		case "e":
+		case "ctrl+e":
 			currRow := m.table.SelectedRow()
 			if len(currRow) > 0 {
 				m.state = stateEdit
@@ -153,7 +161,7 @@ func (m *model) handleNav(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.inputs[0].Focus()
 				return m, nil
 			}
-		case "d":
+		case "ctrl+x":
 			currRow := m.table.SelectedRow()
 			if len(currRow) > 0 {
 				m.deleteTargetID = currRow[0]
@@ -173,6 +181,9 @@ func (m *model) handleAdd(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
+		case "esc":
+			m.resetToNav() // This takes you back to Nav mode
+			return m, nil
 		case "tab", "up", "down":
 			// Cycle through all available inputs
 			m.inputs[m.focusIndex].Blur()
@@ -284,6 +295,8 @@ func (m *model) handleDeleteConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.table.SetRows(rows)
 
+			m.refreshData()
+
 			m.state = stateNav
 			return m, nil
 
@@ -330,13 +343,13 @@ func (m *model) handleEdit(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshData()
 			m.resetToNav()
 			return m, nil
-		case "tab", "down":
+		case "tab", "down", "j":
 			m.inputs[m.focusIndex].Blur()
 			m.focusIndex = (m.focusIndex + 1) % len(m.inputs)
 			m.inputs[m.focusIndex].Focus()
 			return m, nil
 
-		case "shift+tab", "up":
+		case "shift+tab", "up", "k":
 			m.inputs[m.focusIndex].Blur()
 			m.focusIndex--
 			if m.focusIndex < 0 {
@@ -522,7 +535,7 @@ func (m *model) View() string {
 		}
 
 		currentView = fmt.Sprintf(
-			"%s\n\n  Enter name for NEW column:\n  %s\n\n  (enter to create • [ctrl+x] to delete selected field • esc to cancel)",
+			"%s\n\n  Enter name for NEW column:\n  %s\n\n  (enter to create • type field and [ctrl+x] to delete • esc to cancel)",
 			existing.String(),
 			m.inputs[0].View(),
 		)
@@ -553,7 +566,7 @@ func (m *model) View() string {
 		header,
 		statusLine,
 		currentView,
-		footerStyle.Render(" [/] Search • [n] New • [e] Edit • [f] Field Manager • [d] Delete • [esc] Reset • [q/ctrl+c] Quit"),
+		footerStyle.Render(" [/] Search • [ctrl+n] New • [ctrl+e] Edit • [ctrl+f] Field Manager • [ctrl+x] Delete • [esc] Reset • [q/ctrl+c] Quit"),
 	)
 }
 
@@ -605,7 +618,10 @@ func main() {
 	// 4. Initialize our dynamic input slice
 	m.initDynamicInputs()
 
-	if _, err := tea.NewProgram(m).Run(); err != nil {
+	p := tea.NewProgram(m, tea.WithAltScreen())
+
+	// 2. Use 'p' to actually start the application
+	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error: %v", err)
 	}
 }
