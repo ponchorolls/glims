@@ -12,6 +12,7 @@ import (
 	_ "modernc.org/sqlite" // Pure Go driver
 	"os"
 	"strings"
+	"time"
 )
 
 type sessionState int
@@ -25,6 +26,7 @@ const (
 	stateDeleteConfirm
 	stateDeleteFieldConfirm
 	stateHelp
+	stateExportRename sessionState = iota
 )
 
 type Item struct {
@@ -170,6 +172,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleAddField(msg)
 	case stateEdit:
 		return m.handleEdit(msg)
+	case stateExportRename:
+		return m.handleExportRename(msg)
 	case stateDeleteFieldConfirm:
 		return m.handleDeleteFieldConfirm(msg)
 	case stateDeleteConfirm:
@@ -197,8 +201,10 @@ func (m *model) handleNav(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.inputs[0].SetValue("")
 			return m, nil
 		case "ctrl+p":
-			m.exportToCSV("inventory_export.csv")
-			m.statusMsg = "Exported to inventory_export.csv!"
+			m.state = stateExportRename
+			defaultName := fmt.Sprintf("inventory_%s.csv", time.Now().Format("2006-01-02_15-04"))
+			m.inputs[0].SetValue(defaultName)
+			m.inputs[0].Focus()
 			return m, nil
 		case "ctrl+f":
 			m.state = stateAddField
@@ -256,6 +262,9 @@ func (m model) View() string {
 	case stateEdit:
 		borderColor = colorEdit
 		statusText = "EDIT ITEM"
+	case stateExportRename:
+		borderColor = green
+		statusText = "EXPORT CSV"
 	case stateAddField, stateDeleteFieldConfirm:
 		borderColor = colorField
 		statusText = "FIELD MANAGER"
@@ -288,6 +297,11 @@ func (m model) View() string {
 			"Search: "+m.inputs[0].View(),
 			"",
 			m.table.View(),
+		)
+	case stateExportRename:
+		innerView = fmt.Sprintf(
+			"\n  Enter Filename:\n\n  %s\n\n  (enter to save • esc to cancel)",
+			m.inputs[0].View(),
 		)
 	case stateDeleteConfirm:
 		innerView = fmt.Sprintf("\n\n  Are you sure you want to delete item #%s?\n\n  [y] Yes  •  [n] No", m.deleteTargetID)
@@ -665,4 +679,30 @@ func InitDB(filepath string) (*sql.DB, error) {
 	)`)
 
 	return db, err
+}
+
+func (m *model) handleExportRename(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	if kmsg, ok := msg.(tea.KeyMsg); ok {
+		switch kmsg.String() {
+		case "esc":
+			m.resetToNav()
+			return m, nil
+		case "enter":
+			filename := m.inputs[0].Value()
+			if !strings.HasSuffix(filename, ".csv") {
+				filename += ".csv"
+			}
+			err := m.exportToCSV(filename)
+			if err != nil {
+				m.statusMsg = "Export failed!"
+			} else {
+				m.statusMsg = "Exported to " + filename
+			}
+			m.resetToNav()
+			return m, nil
+		}
+	}
+	m.inputs[0], cmd = m.inputs[0].Update(msg)
+	return m, cmd
 }
