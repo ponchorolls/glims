@@ -27,6 +27,8 @@ const (
 	stateDeleteFieldConfirm
 	stateHelp
 	stateExportRename sessionState = iota
+	stateImportPath   sessionState = iota
+	stateImportResult
 )
 
 type Item struct {
@@ -172,6 +174,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleAddField(msg)
 	case stateEdit:
 		return m.handleEdit(msg)
+	case stateImportPath:
+		return m.handleImportPath(msg)
 	case stateExportRename:
 		return m.handleExportRename(msg)
 	case stateDeleteFieldConfirm:
@@ -200,22 +204,27 @@ func (m *model) handleNav(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.inputs[0].Focus()
 			m.inputs[0].SetValue("")
 			return m, nil
-		case "ctrl+p":
+		case "I":
+			m.state = stateImportPath
+			m.inputs[0].SetValue("import.csv")
+			m.inputs[0].Focus()
+			return m, nil
+		case "P":
 			m.state = stateExportRename
 			defaultName := fmt.Sprintf("inventory_%s.csv", time.Now().Format("2006-01-02_15-04"))
 			m.inputs[0].SetValue(defaultName)
 			m.inputs[0].Focus()
 			return m, nil
-		case "ctrl+f":
+		case "F":
 			m.state = stateAddField
 			m.inputs[0].Focus()
 			return m, nil
-		case "ctrl+n":
+		case "N":
 			m.state = stateAdd
 			m.focusIndex = 0
 			m.inputs[0].Focus()
 			return m, nil
-		case "ctrl+e":
+		case "E":
 			currRow := m.table.SelectedRow()
 			if len(currRow) > 0 {
 				m.state = stateEdit
@@ -229,7 +238,7 @@ func (m *model) handleNav(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.inputs[0].Focus()
 				return m, nil
 			}
-		case "ctrl+x":
+		case "X":
 			currRow := m.table.SelectedRow()
 			if len(currRow) > 0 {
 				m.deleteTargetID = currRow[0]
@@ -298,6 +307,11 @@ func (m model) View() string {
 			"",
 			m.table.View(),
 		)
+	case stateImportPath:
+		innerView = fmt.Sprintf(
+			"\n  Import CSV File\n  Path: %s\n\n  (enter to start • esc to cancel)",
+			m.inputs[0].View(),
+		)
 	case stateExportRename:
 		innerView = fmt.Sprintf(
 			"\n  Enter Filename:\n\n  %s\n\n  (enter to save • esc to cancel)",
@@ -311,7 +325,7 @@ func (m model) View() string {
 
 	header := headerStyle.Render(" GLIMS INVENTORY ")
 	statusLine := lipgloss.NewStyle().Foreground(borderColor).Bold(true).Render("── " + statusText + " ──")
-	footer := footerStyle.Render(" [?] Help • [ctrl+p] Export • [q] Quit ")
+	footer := footerStyle.Render(" [?] Help • [q] Quit ")
 
 	uiStack := lipgloss.JoinVertical(
 		lipgloss.Center,
@@ -356,12 +370,13 @@ func (m *model) renderHelp() string {
     KEYBOARD SHORTCUTS
     ------------------
     [/]      Search Items
-    [ctrl+n] Add New Item
-    [ctrl+e] Edit Selected Item
-    [ctrl+x] Delete Selected Item
+    [N] Add New Item
+    [E] Edit Selected Item
+    [X] Delete Selected Item
 
-    [ctrl+f] Field Manager
-    [ctrl+p] Export to CSV
+    [F] Field Manager
+    [I] Import CSV from 'import.csv'
+    [P] Export to CSV
 
     [?]      Toggle Help
     [esc]    Back / Reset
@@ -490,7 +505,7 @@ func (m *model) handleAddField(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.resetToNav()
 			return m, nil
-		case "ctrl+x":
+		case "X":
 			m.deleteTargetID = m.inputs[0].Value()
 			if m.deleteTargetID != "" && m.deleteTargetID != "Name" {
 				m.state = stateDeleteFieldConfirm
@@ -700,6 +715,94 @@ func (m *model) handleExportRename(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusMsg = "Exported to " + filename
 			}
 			m.resetToNav()
+			return m, nil
+		}
+	}
+	m.inputs[0], cmd = m.inputs[0].Update(msg)
+	return m, cmd
+}
+
+func (m *model) importFromCSV(filename string) (int, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	records, err := reader.ReadAll()
+	if err != nil {
+		return 0, err
+	}
+
+	if len(records) < 2 {
+		return 0, fmt.Errorf("CSV file is empty")
+	}
+
+	headers := records[0]
+	// 1. Ensure all columns in CSV exist in DB
+	for _, header := range headers {
+		if strings.ToLower(header) == "id" || strings.ToLower(header) == "name" {
+			continue
+		}
+		// AddCustomField ignores if already exists due to UNIQUE constraint
+		AddCustomField(m.db, header)
+	}
+
+	// 2. Insert records
+	count := 0
+	for _, record := range records[1:] {
+		cols := "name"
+		placeholders := "?"
+		var nameVal string
+		var args []interface{}
+
+		// Map record values to headers
+		valMap := make(map[string]string)
+		for i, val := range record {
+			if i < len(headers) {
+				h := headers[i]
+				if strings.ToLower(h) == "name" {
+					nameVal = val
+				} else if strings.ToLower(h) != "id" {
+					valMap[h] = val
+				}
+			}
+		}
+
+		args = append(args, nameVal)
+		for k, v := range valMap {
+			cols += fmt.Sprintf(", [%s]", k)
+			placeholders += ", ?"
+			args = append(args, v)
+		}
+
+		query := fmt.Sprintf("INSERT INTO inventory (%s) VALUES (%s)", cols, placeholders)
+		_, err := m.db.Exec(query, args...)
+		if err == nil {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (m *model) handleImportPath(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	if kmsg, ok := msg.(tea.KeyMsg); ok {
+		switch kmsg.String() {
+		case "esc":
+			m.resetToNav()
+			return m, nil
+		case "enter":
+			count, err := m.importFromCSV(m.inputs[0].Value())
+			if err != nil {
+				m.statusMsg = fmt.Sprintf("Error: %v", err)
+			} else {
+				m.statusMsg = fmt.Sprintf("Successfully imported %d items!", count)
+			}
+			m.initDynamicInputs() // Refresh field list in case new ones were added
+			m.refreshData()
+			m.state = stateNav
 			return m, nil
 		}
 	}
