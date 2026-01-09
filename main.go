@@ -431,6 +431,7 @@ func (m *model) handleSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if kmsg, ok := msg.(tea.KeyMsg); ok {
 		if kmsg.String() == "esc" || kmsg.String() == "enter" {
 			m.state = stateNav
+			m.refreshData()
 			return m, nil
 		}
 	}
