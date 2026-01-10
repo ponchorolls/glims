@@ -61,19 +61,33 @@ type model struct {
 // --- STYLING ---
 
 var (
-	purple     = lipgloss.Color("#BD93F9")
+	background = lipgloss.Color("#282A36")
 	foreground = lipgloss.Color("#F8F8F2")
-	green      = lipgloss.Color("#50FA7B")
+	comment    = lipgloss.Color("#6272A4")
 	red        = lipgloss.Color("#FF5555")
+	green      = lipgloss.Color("#50FA7B")
 	yellow     = lipgloss.Color("#F1FA8C")
+	purple     = lipgloss.Color("#BD93F9")
+	cyan       = lipgloss.Color("#8BE9FD")
+	orange     = lipgloss.Color("#FFB86C")
 
-	headerStyle = lipgloss.NewStyle().Foreground(foreground).Background(purple).Padding(0, 1).Bold(true)
-	footerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")).Italic(true)
+	headerStyle = lipgloss.NewStyle().Foreground(foreground).Background(background).Padding(0, 1).Bold(true)
+	footerStyle = lipgloss.NewStyle().Foreground(comment).Italic(true)
 )
 
-// --- CORE UPDATE ROUTER ---
+// --- DYNAMIC STATE COLORS ---
+var (
+	colorNav    = purple
+	colorSearch = cyan
+	colorAdd    = green
+	colorEdit   = orange
+	colorField  = yellow
+	colorDelete = red
+)
 
 func (m *model) Init() tea.Cmd { return textinput.Blink }
+
+// --- CORE UPDATE ROUTER ---
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -195,37 +209,56 @@ func (m *model) View() string {
 
 	var innerView string
 	var statusText string
+	var borderColor lipgloss.Color
 
 	switch m.state {
 	case stateHelp:
 		innerView = m.renderHelp()
 		statusText = "HELP"
 	case stateSearch:
+		borderColor = colorSearch
 		innerView = "Search: " + m.inputs[0].View() + "\n\n" + m.renderTable()
 		statusText = "SEARCH"
 	case stateAdd, stateEdit:
+		borderColor = colorEdit
 		innerView = m.renderForm()
 		statusText = "ITEM FORM"
 	case stateAddField, stateDeleteFieldConfirm, stateFieldRename:
+		borderColor = colorField
 		innerView = m.renderFieldManager()
 		statusText = "FIELDS"
 	case stateExportRename, stateImportPath:
+		borderColor = green
 		innerView = "Enter Path: " + m.inputs[0].View()
 		statusText = "CSV TOOL"
 	case stateDeleteConfirm:
+		borderColor = colorDelete
 		innerView = m.renderDeleteConfirm()
 		statusText = "CONFIRM DELETE"
 	default:
+		borderColor = colorNav
 		innerView = m.renderTable()
 		statusText = "INVENTORY"
 	}
 
+	// Dynamic Style for the Central Box
+	contentStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Padding(1, 2).
+		Width(m.width - 6).
+		Height(m.height - 10)
+
+	header := headerStyle.Render(" GLIMS INVENTORY ")
+	statusLine := lipgloss.NewStyle().Foreground(borderColor).Bold(true).Render("── " + statusText + " ──")
+	footer := footerStyle.Render(" [?] Help • [q] Quit ")
+
 	uiStack := lipgloss.JoinVertical(
 		lipgloss.Center,
-		headerStyle.Render(" GLIMS INVENTORY "),
-		lipgloss.NewStyle().Foreground(purple).Bold(true).Render("── "+statusText+" ──"),
-		lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(purple).Padding(1, 2).Render(innerView),
-		footerStyle.Render(" [?] Help • [Space] Select • [/] Search • [q] Quit "),
+		header,
+		statusLine,
+		contentStyle.Render(innerView),
+		footer,
 	)
 
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, uiStack)
@@ -339,46 +372,6 @@ func (m *model) renderTable() string {
 	s.Selected = s.Selected.Background(purple).Foreground(foreground)
 	m.table.SetStyles(s)
 	return m.table.View()
-}
-
-// ... (Rest of your specific handlers like handleForm, handleSearch, handleAddField here) ...
-
-func main() {
-	db, err := InitDB("glims.db")
-	if err != nil {
-		fmt.Printf("DB Error: %v", err)
-		return
-	}
-	defer db.Close()
-
-	// 1. Initial Data Load
-	items, customCols, _ := GetInventory(db)
-
-	// 2. Setup Table
-	tableCols := []table.Column{{Title: "ID", Width: 4}, {Title: "Name", Width: 30}}
-	for _, col := range customCols {
-		tableCols = append(tableCols, table.Column{Title: col, Width: 15})
-	}
-
-	t := table.New(table.WithColumns(tableCols), table.WithFocused(true), table.WithHeight(10))
-
-	// 3. Setup Model
-	m := &model{
-		db:           db,
-		table:        t,
-		inventory:    items,
-		selectedRows: make(map[string]bool),
-		state:        stateNav,
-	}
-
-	// 4. Initialize dynamic components
-	m.initDynamicInputs()
-	m.refreshData()
-
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
-		fmt.Printf("Error: %v", err)
-	}
 }
 
 func (m *model) handleForm(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -933,4 +926,44 @@ func (m *model) setStatus(msg string) tea.Cmd {
 	return tea.Tick(time.Second*3, func(t time.Time) tea.Msg {
 		return clearStatusMsg{}
 	})
+}
+
+// --- MAIN ---
+
+func main() {
+	db, err := InitDB("glims.db")
+	if err != nil {
+		fmt.Printf("DB Error: %v", err)
+		return
+	}
+	defer db.Close()
+
+	// 1. Initial Data Load
+	items, customCols, _ := GetInventory(db)
+
+	// 2. Setup Table
+	tableCols := []table.Column{{Title: "ID", Width: 4}, {Title: "Name", Width: 30}}
+	for _, col := range customCols {
+		tableCols = append(tableCols, table.Column{Title: col, Width: 15})
+	}
+
+	t := table.New(table.WithColumns(tableCols), table.WithFocused(true), table.WithHeight(10))
+
+	// 3. Setup Model
+	m := &model{
+		db:           db,
+		table:        t,
+		inventory:    items,
+		selectedRows: make(map[string]bool),
+		state:        stateNav,
+	}
+
+	// 4. Initialize dynamic components
+	m.initDynamicInputs()
+	m.refreshData()
+
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		fmt.Printf("Error: %v", err)
+	}
 }
