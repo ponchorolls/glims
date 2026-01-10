@@ -178,19 +178,21 @@ func (m *model) handleNav(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.inputs[0].SetValue("import.csv")
 			return m, nil
 		case "X":
-			m.state = stateDeleteConfirm
 			if len(m.getSelectedIDs()) == 0 {
 				currRow := m.table.SelectedRow()
-				if len(currRow) > 0 {
-					m.deleteTargetID = currRow[0]
+				if len(currRow) > 1 {
+					m.deleteTargetID = currRow[1] // ID is the second column
 				}
 			}
+			m.state = stateDeleteConfirm
 			return m, nil
-		case " ":
+		case " ": // Toggle selection
 			currRow := m.table.SelectedRow()
 			if len(currRow) > 0 {
-				id := currRow[0]
+				// ID is at index 1 because index 0 is now the [ ] marker
+				id := currRow[1]
 				m.selectedRows[id] = !m.selectedRows[id]
+				m.refreshData() // Rebuild rows to show the [x]
 			}
 			return m, nil
 		}
@@ -228,7 +230,7 @@ func (m *model) View() string {
 		innerView = m.renderFieldManager()
 		statusText = "FIELDS"
 	case stateExportRename, stateImportPath:
-		borderColor = green
+		borderColor = colorAdd
 		innerView = "Enter Path: " + m.inputs[0].View()
 		statusText = "CSV TOOL"
 	case stateDeleteConfirm:
@@ -241,24 +243,38 @@ func (m *model) View() string {
 		statusText = "INVENTORY"
 	}
 
-	// Dynamic Style for the Central Box
+	// --- INTERNAL CENTERING LOGIC ---
+	// Calculate total table width: Sel(3) + ID(4) + Name(30) + (CustomCols * 15) + separators
+	tableWidth := 3 + 4 + 30 + (len(m.fieldNames)-1)*15 + len(m.fieldNames) + 2
+
+	contentWidth := tableWidth
+	if m.state == stateAdd || m.state == stateEdit || m.state == stateHelp {
+		contentWidth = 50 // Fixed width for forms and help text
+	}
+
+	availWidth := m.width - 6
+	leftPadding := (availWidth - contentWidth) / 2
+	if leftPadding < 0 {
+		leftPadding = 0
+	}
+
+	centeredContent := lipgloss.NewStyle().
+		PaddingLeft(leftPadding).
+		Render(innerView)
+
 	contentStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
-		Padding(1, 2).
+		Padding(1, 0).
 		Width(m.width - 6).
 		Height(m.height - 10)
 
-	header := headerStyle.Render(" GLIMS INVENTORY ")
-	statusLine := lipgloss.NewStyle().Foreground(borderColor).Bold(true).Render("── " + statusText + " ──")
-	footer := footerStyle.Render(" [?] Help • [q] Quit ")
-
 	uiStack := lipgloss.JoinVertical(
 		lipgloss.Center,
-		header,
-		statusLine,
-		contentStyle.Render(innerView),
-		footer,
+		headerStyle.Render(" GLIMS INVENTORY "),
+		lipgloss.NewStyle().Foreground(borderColor).Bold(true).Render("── "+statusText+" ──"),
+		contentStyle.Render(centeredContent),
+		footerStyle.Render(" [?] Help • [Space] Select • [q] Quit "),
 	)
 
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, uiStack)
@@ -346,10 +362,16 @@ func (m *model) refreshData() {
 	items, customCols, _ := GetInventory(m.db)
 	m.inventory = items
 
-	cols := []table.Column{{Title: "ID", Width: 4}, {Title: "Name", Width: 30}}
+	// Define Columns: Added "Sel" at the start
+	cols := []table.Column{
+		{Title: "Sel", Width: 3},
+		{Title: "ID", Width: 4},
+		{Title: "Name", Width: 30},
+	}
 	for _, c := range customCols {
 		cols = append(cols, table.Column{Title: c, Width: 15})
 	}
+
 	m.table.SetColumns(cols)
 	m.table.SetRows(m.itemsToRows(items, customCols))
 }
@@ -357,7 +379,13 @@ func (m *model) refreshData() {
 func (m *model) itemsToRows(items []Item, customCols []string) []table.Row {
 	var rows []table.Row
 	for _, item := range items {
-		row := table.Row{item.ID, item.Name}
+		// Marker logic for the "Sel" column
+		marker := "[ ]"
+		if m.selectedRows[item.ID] {
+			marker = "[x]"
+		}
+
+		row := table.Row{marker, item.ID, item.Name}
 		for _, c := range customCols {
 			row = append(row, item.Values[c])
 		}
@@ -385,7 +413,8 @@ func (m *model) handleForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.inputs[m.focusIndex].Blur()
 			m.focusIndex = (m.focusIndex + 1) % len(m.inputs)
 			m.inputs[m.focusIndex].Focus()
-		case "enter":
+		case "enter", "ctrl+s":
+			// --- DATABASE EXECUTION ---
 			if m.state == stateEdit {
 				query := "UPDATE inventory SET name = ?"
 				args := []interface{}{m.inputs[0].Value()}
@@ -397,6 +426,7 @@ func (m *model) handleForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 				args = append(args, m.editTargetID)
 				m.db.Exec(query, args...)
 			} else {
+				// Ensure this block executes for stateAdd
 				cols := "name"
 				vals := "?"
 				args := []interface{}{m.inputs[0].Value()}
@@ -407,8 +437,18 @@ func (m *model) handleForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.db.Exec(fmt.Sprintf("INSERT INTO inventory (%s) VALUES (%s)", cols, vals), args...)
 			}
-			m.refreshData()
-			m.state = stateNav
+
+			m.refreshData() // Refresh to show new/updated data
+
+			// --- STATE MANAGEMENT ---
+			if kmsg.String() == "ctrl+s" {
+				m.resetInputs() // Clear for next item
+				m.inputs[0].Focus()
+				// Use setStatus to show feedback for 3 seconds
+				return m, m.setStatus("Item Saved! Ready for next...")
+			}
+
+			m.state = stateNav // Standard 'Enter' returns to table
 			return m, nil
 		}
 	}
