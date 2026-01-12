@@ -416,15 +416,9 @@ func (m *model) refreshData() {
 	}
 	m.inventory = items
 
-	// 1. Calculate base space used by core columns and margins
-	// PID (6) + QTY (8) + Margins/Selection (10) = 24
+	// 1. Calculate widths (Keep your existing math here)
 	coreWidth := 24
-
-	// 2. Determine how much space is left for Name and Custom Fields
 	remainingWidth := m.width - coreWidth
-
-	// 3. Logic: Give Name at least 30% of remaining space,
-	// then divide the rest among custom columns.
 	nameWidth := int(float64(remainingWidth) * 0.4)
 	if nameWidth < 20 {
 		nameWidth = 20
@@ -438,7 +432,6 @@ func (m *model) refreshData() {
 		}
 	}
 
-	// Calculate width per custom field (minimum 10)
 	perFieldWidth := 15
 	if numCustom > 0 {
 		perFieldWidth = customFieldSpace / numCustom
@@ -447,12 +440,20 @@ func (m *model) refreshData() {
 		}
 	}
 
+	newHeight := m.height - 7
+	if newHeight < 5 {
+		newHeight = 5 // Minimum height safety
+	}
+
+	m.table.SetHeight(newHeight)
+	m.table.SetRows([]table.Row{})
+
+	// 3. Define the new Column structure
 	cols := []table.Column{
 		{Title: "ID", Width: 6},
 		{Title: "NAME", Width: nameWidth},
 		{Title: "QTY", Width: 8},
 	}
-
 	for _, colName := range customCols {
 		if colName != "id" && colName != "name" && colName != "qty" {
 			cols = append(cols, table.Column{
@@ -462,6 +463,7 @@ func (m *model) refreshData() {
 		}
 	}
 
+	// 4. Update Columns first, then populate with new Row data
 	m.table.SetColumns(cols)
 	m.table.SetRows(m.itemsToRows(items, customCols))
 }
@@ -1080,22 +1082,24 @@ func main() {
 	}
 	defer db.Close()
 
-	// 1. Create a "Skeleton" model
+	initialCols := []table.Column{
+		{Title: "ID", Width: 6},
+		{Title: "NAME", Width: 30},
+		{Title: "QTY", Width: 8},
+	}
+
 	m := model{
 		db:           db,
 		state:        stateNav,
 		selectedRows: make(map[string]bool),
 		// Initialize table with empty columns/rows to start
 		table: table.New(
+			table.WithColumns(initialCols),
 			table.WithFocused(true),
-			table.WithHeight(10),
 		),
 	}
 
-	// 2. Use refreshData to correctly size columns and rows based on DB
 	m.refreshData()
-
-	// 3. Initialize the inputs for the Add/Edit forms
 	m.initDynamicInputs()
 
 	p := tea.NewProgram(&m, tea.WithAltScreen())
