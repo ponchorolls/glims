@@ -147,37 +147,34 @@ func (m *model) handleNav(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = stateHelp
 			return m, nil
 
-		case " ": // Toggle Selection (Option C: Symbols)
+		case " ": // Toggle Selection
 			if len(currRow) > 0 {
-				id := currRow[0] // ID is index 0
+				id := currRow[0]
 				m.selectedRows[id] = !m.selectedRows[id]
-				m.refreshData() // Redraws table to show ○ vs ●
+				m.refreshData()
 			}
 			return m, nil
 
-		case "/": // Fuzzy Search
+		case "/": // Search
 			m.state = stateSearch
 			m.inputs[0].Focus()
 			m.inputs[0].SetValue("")
 			return m, nil
 
-		case "N": // Add New Item
+		case "n", "N": // Add New
 			m.state = stateAdd
 			m.resetInputs()
 			m.inputs[0].Focus()
 			return m, nil
 
-		case "E": // Edit Item
+		case "e", "E": // Edit
 			if len(currRow) > 0 {
 				m.state = stateEdit
 				m.editTargetID = currRow[0]
-
-				// Map row data back to inputs
 				for i := 0; i < len(m.inputs); i++ {
 					if i+1 < len(currRow) {
 						val := currRow[i+1]
-						// CRITICAL: Strip the symbol so it doesn't save back to DB
-						if i == 0 { // Name field
+						if i == 0 { // Strip symbols from Name
 							val = strings.TrimPrefix(val, "○ ")
 							val = strings.TrimPrefix(val, "● ")
 						}
@@ -189,32 +186,31 @@ func (m *model) handleNav(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-		case "F": // Field Manager (Shift+F)
+		case "f", "F": // Field Manager
 			m.state = stateAddField
 			m.focusIndex = 0
-			m.resetInputs() // Clear any old values from form inputs
-			m.inputs[0].Focus()
+			m.inputs[0] = textinput.New()
 			return m, nil
 
-		case "X": // Delete Confirm
-			m.state = stateDeleteConfirm
-			// Target specific row only if no bulk selections exist
-			if len(m.getSelectedIDs()) == 0 && len(currRow) > 0 {
-				m.deleteTargetID = currRow[0]
+		case "x", "X": // Delete
+			if len(m.getSelectedIDs()) > 0 || len(currRow) > 0 {
+				m.state = stateDeleteConfirm
+				if len(m.getSelectedIDs()) == 0 {
+					m.deleteTargetID = currRow[0]
+				}
 			}
 			return m, nil
 
-		case "P": // Export CSV
+		case "p", "P": // Export
 			m.state = stateExportRename
-			m.inputs[0] = textinput.New() // Create a fresh input
+			m.inputs[0] = textinput.New()
 			m.inputs[0].Focus()
-			m.inputs[0].Placeholder = "Filename..."
-			m.inputs[0].SetValue(fmt.Sprintf("inventory_export_%s.csv", time.Now().Format("2006-01-02")))
+			m.inputs[0].SetValue(fmt.Sprintf("inventory_%s.csv", time.Now().Format("2006-01-02")))
 			return m, nil
 
-		case "I": // Import CSV
+		case "i", "I": // Import
 			m.state = stateImportPath
-			m.inputs[0] = textinput.New() // Create a fresh input
+			m.inputs[0] = textinput.New()
 			m.inputs[0].Focus()
 			m.inputs[0].Placeholder = "path/to/file.csv"
 			m.inputs[0].SetValue("import.csv")
@@ -222,7 +218,6 @@ func (m *model) handleNav(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Important: Pass arrow keys and page up/down to the table model
 	var cmd tea.Cmd
 	m.table, cmd = m.table.Update(msg)
 	return m, cmd
@@ -243,13 +238,20 @@ func (m *model) View() string {
 		Render("GLIMS") +
 		lipgloss.NewStyle().Foreground(comment).Render(fmt.Sprintf(" v1.1.0 [%s]", strings.ToUpper(m.getStatusText())))
 
-	// 2. Main Content (The Table or Form)
 	var content string
 	switch m.state {
 	case stateSearch:
 		content = " / " + m.inputs[0].View() + "\n" + m.renderTable()
 	case stateAdd, stateEdit:
 		content = m.renderForm()
+	case stateHelp:
+		content = m.renderHelp()
+	case stateDeleteConfirm:
+		content = m.renderDeleteConfirm()
+	case stateAddField, stateFieldRename, stateDeleteFieldConfirm:
+		content = m.renderFieldManager()
+	case stateExportRename, stateImportPath:
+		content = " File Path: " + m.inputs[0].View()
 	default:
 		content = m.renderTable()
 	}
@@ -744,30 +746,22 @@ func (m *model) handleDeleteConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch kmsg.String() {
 		case "y", "Y":
 			var idsToDelete []string
-
-			// 1. Collect IDs: Prioritize the green selections
 			for id, selected := range m.selectedRows {
 				if selected {
 					idsToDelete = append(idsToDelete, id)
 				}
 			}
-
-			// 2. Fallback: If no green items, use the single target
 			if len(idsToDelete) == 0 && m.deleteTargetID != "" {
 				idsToDelete = append(idsToDelete, m.deleteTargetID)
 			}
-
-			// 3. Execution
 			if len(idsToDelete) > 0 {
 				for _, id := range idsToDelete {
 					m.db.Exec("DELETE FROM inventory WHERE id = ?", id)
 				}
-
 				count := len(idsToDelete)
 				m.selectedRows = make(map[string]bool) // Clear selections
 				m.deleteTargetID = ""                  // Clear single target
 				m.refreshData()                        // Rebuild table rows
-
 				m.state = stateNav
 				return m, m.setStatus(fmt.Sprintf("Successfully deleted %d item(s)", count))
 			}
