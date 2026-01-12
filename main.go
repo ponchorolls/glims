@@ -38,7 +38,7 @@ const (
 type Item struct {
 	ID     string
 	Name   string
-	Qty    int
+	Qty    string
 	Values map[string]string
 }
 
@@ -96,8 +96,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.table.SetWidth(m.width - 10)
-		m.table.SetHeight(m.height - 18)
+		m.refreshData()
+		return m, nil
 	}
 
 	if kmsg, ok := msg.(tea.KeyMsg); ok {
@@ -133,70 +133,92 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *model) handleNav(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if kmsg, ok := msg.(tea.KeyMsg); ok {
+		currRow := m.table.SelectedRow()
+
 		switch kmsg.String() {
 		case "q":
 			return m, tea.Quit
+
+		case "esc":
+			m.resetToNav()
+			return m, nil
+
 		case "?":
 			m.state = stateHelp
 			return m, nil
-		case "/":
+
+		case " ": // Toggle Selection (Option C: Symbols)
+			if len(currRow) > 0 {
+				id := currRow[0] // ID is index 0
+				m.selectedRows[id] = !m.selectedRows[id]
+				m.refreshData() // Redraws table to show ○ vs ●
+			}
+			return m, nil
+
+		case "/": // Fuzzy Search
 			m.state = stateSearch
 			m.inputs[0].Focus()
 			m.inputs[0].SetValue("")
 			return m, nil
-		case "N":
+
+		case "N": // Add New Item
 			m.state = stateAdd
 			m.resetInputs()
 			m.inputs[0].Focus()
 			return m, nil
-		case "E":
-			currRow := m.table.SelectedRow()
+
+		case "E": // Edit Item
 			if len(currRow) > 0 {
 				m.state = stateEdit
 				m.editTargetID = currRow[0]
+
+				// Map row data back to inputs
 				for i := 0; i < len(m.inputs); i++ {
 					if i+1 < len(currRow) {
-						m.inputs[i].SetValue(currRow[i+1])
+						val := currRow[i+1]
+						// CRITICAL: Strip the symbol so it doesn't save back to DB
+						if i == 0 { // Name field
+							val = strings.TrimPrefix(val, "○ ")
+							val = strings.TrimPrefix(val, "● ")
+						}
+						m.inputs[i].SetValue(val)
 					}
 				}
 				m.focusIndex = 0
 				m.inputs[0].Focus()
 				return m, nil
 			}
-		case "F":
+
+		case "F": // Field Manager (Shift+F)
 			m.state = stateAddField
 			m.focusIndex = 0
-			return m, nil
-		case "P":
-			m.state = stateExportRename
-			m.inputs[0].SetValue(fmt.Sprintf("inventory_%s.csv", time.Now().Format("2006-01-02")))
+			m.resetInputs() // Clear any old values from form inputs
 			m.inputs[0].Focus()
 			return m, nil
-		case "I":
+
+		case "X": // Delete Confirm
+			m.state = stateDeleteConfirm
+			// Target specific row only if no bulk selections exist
+			if len(m.getSelectedIDs()) == 0 && len(currRow) > 0 {
+				m.deleteTargetID = currRow[0]
+			}
+			return m, nil
+
+		case "P": // Export CSV
+			m.state = stateExportRename
+			m.inputs[0].Focus()
+			m.inputs[0].SetValue(fmt.Sprintf("inventory_export_%s.csv", time.Now().Format("2006-01-02")))
+			return m, nil
+
+		case "I": // Import CSV
 			m.state = stateImportPath
 			m.inputs[0].Focus()
 			m.inputs[0].SetValue("import.csv")
 			return m, nil
-		case "X":
-			if len(m.getSelectedIDs()) == 0 {
-				currRow := m.table.SelectedRow()
-				if len(currRow) > 1 {
-					m.deleteTargetID = currRow[1] // ID is the second column
-				}
-			}
-			m.state = stateDeleteConfirm
-			return m, nil
-		case " ": // Toggle selection
-			currRow := m.table.SelectedRow()
-			if len(currRow) > 0 {
-				// ID is at index 1 because index 0 is now the [ ] marker
-				id := currRow[1]
-				m.selectedRows[id] = !m.selectedRows[id]
-				m.refreshData() // Rebuild rows to show the [x]
-			}
-			return m, nil
 		}
 	}
+
+	// Important: Pass arrow keys and page up/down to the table model
 	var cmd tea.Cmd
 	m.table, cmd = m.table.Update(msg)
 	return m, cmd
@@ -213,6 +235,7 @@ func (m *model) View() string {
 	var statusText string
 	var borderColor lipgloss.Color
 
+	// 1. Select the content
 	switch m.state {
 	case stateHelp:
 		innerView = m.renderHelp()
@@ -229,10 +252,6 @@ func (m *model) View() string {
 		borderColor = colorField
 		innerView = m.renderFieldManager()
 		statusText = "FIELDS"
-	case stateExportRename, stateImportPath:
-		borderColor = colorAdd
-		innerView = "Enter Path: " + m.inputs[0].View()
-		statusText = "CSV TOOL"
 	case stateDeleteConfirm:
 		borderColor = colorDelete
 		innerView = m.renderDeleteConfirm()
@@ -243,13 +262,15 @@ func (m *model) View() string {
 		statusText = "INVENTORY"
 	}
 
-	// --- INTERNAL CENTERING LOGIC ---
-	// Calculate total table width: Sel(3) + ID(4) + Name(30) + (CustomCols * 15) + separators
-	tableWidth := 3 + 4 + 30 + (len(m.fieldNames)-1)*15 + len(m.fieldNames) + 2
+	// 2. DYNAMIC CENTERING MATH
+	// Get the width of the table directly from the model
+	contentWidth := m.table.Width()
 
-	contentWidth := tableWidth
-	if m.state == stateAdd || m.state == stateEdit || m.state == stateHelp {
-		contentWidth = 50 // Fixed width for forms and help text
+	// Use a fixed width for forms so they look consistent
+	// Inside func (m *model) View()
+	if m.state == stateAdd || m.state == stateEdit || m.state == stateAddField ||
+		m.state == stateExportRename || m.state == stateImportPath {
+		contentWidth = 40
 	}
 
 	availWidth := m.width - 6
@@ -258,22 +279,26 @@ func (m *model) View() string {
 		leftPadding = 0
 	}
 
+	// 3. APPLY PADDING
 	centeredContent := lipgloss.NewStyle().
 		PaddingLeft(leftPadding).
 		Render(innerView)
 
-	contentStyle := lipgloss.NewStyle().
+	// 4. RENDER OUTER BOX
+	contentBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
 		Padding(1, 0).
 		Width(m.width - 6).
-		Height(m.height - 10)
+		Height(m.height - 10).
+		Render(centeredContent)
 
+	// 5. ASSEMBLE UI
 	uiStack := lipgloss.JoinVertical(
 		lipgloss.Center,
 		headerStyle.Render(" GLIMS INVENTORY "),
 		lipgloss.NewStyle().Foreground(borderColor).Bold(true).Render("── "+statusText+" ──"),
-		contentStyle.Render(centeredContent),
+		contentBox,
 		footerStyle.Render(" [?] Help • [Space] Select • [q] Quit "),
 	)
 
@@ -328,6 +353,8 @@ func GetInventory(db *sql.DB) ([]Item, []string, error) {
 				item.ID = valStr
 			} else if colName == "name" {
 				item.Name = valStr
+			} else if colName == "qty" {
+				item.Qty = valStr // Map the DB qty to the Item struct
 			} else {
 				item.Values[colName] = valStr
 			}
@@ -343,13 +370,13 @@ func InitDB(filepath string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	// Create inventory table
+	// ADD 'qty' TEXT DEFAULT '0' TO THE QUERY BELOW
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS inventory (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		name TEXT NOT NULL
+		name TEXT NOT NULL,
+		qty TEXT DEFAULT '0' 
 	)`)
 
-	// Create metadata table for custom fields
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS field_definitions (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT UNIQUE NOT NULL
@@ -359,35 +386,58 @@ func InitDB(filepath string) (*sql.DB, error) {
 }
 
 func (m *model) refreshData() {
+	// 1. CLEAR the table to prevent the "index out of range" panic
+	m.table.SetRows([]table.Row{})
+
+	// 2. Fetch fresh data
 	items, customCols, _ := GetInventory(m.db)
 	m.inventory = items
 
-	// Define Columns: Added "Sel" at the start
+	// 3. Define Columns with explicit widths
+	// We use fixed widths so we can calculate the center precisely
+	idW, nameW, qtyW, customW := 4, 25, 6, 15
+
 	cols := []table.Column{
-		{Title: "Sel", Width: 3},
-		{Title: "ID", Width: 4},
-		{Title: "Name", Width: 30},
+		{Title: "ID", Width: idW},
+		{Title: "Name", Width: nameW},
+		{Title: "Qty", Width: qtyW},
 	}
 	for _, c := range customCols {
-		cols = append(cols, table.Column{Title: c, Width: 15})
+		if c != "id" && c != "name" && c != "qty" {
+			cols = append(cols, table.Column{Title: c, Width: customW})
+		}
 	}
-
 	m.table.SetColumns(cols)
+
+	// 4. THE CENTERING FIX: Calculate total visual width
+	// Width of all columns + the vertical separators (|)
+	totalWidth := idW + nameW + qtyW + (len(cols)-3)*customW + len(cols) + 1
+	m.table.SetWidth(totalWidth) // Store this for the View()
+
+	// 5. Populate rows
 	m.table.SetRows(m.itemsToRows(items, customCols))
 }
 
 func (m *model) itemsToRows(items []Item, customCols []string) []table.Row {
 	var rows []table.Row
 	for _, item := range items {
-		// Marker logic for the "Sel" column
-		marker := "[ ]"
+		prefix := "○ "
 		if m.selectedRows[item.ID] {
-			marker = "[x]"
+			prefix = "● "
 		}
 
-		row := table.Row{marker, item.ID, item.Name}
-		for _, c := range customCols {
-			row = append(row, item.Values[c])
+		// Ensure these match the 'cols' slice in refreshData exactly
+		row := table.Row{
+			item.ID,
+			prefix + item.Name,
+			fmt.Sprintf("%s", item.Qty), // Convert int Qty to string
+		}
+
+		for _, colName := range customCols {
+			if colName == "id" || colName == "name" || colName == "qty" {
+				continue
+			}
+			row = append(row, item.Values[colName])
 		}
 		rows = append(rows, row)
 	}
@@ -405,7 +455,10 @@ func (m *model) renderTable() string {
 func (m *model) handleForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	if kmsg, ok := msg.(tea.KeyMsg); ok {
-		switch kmsg.String() {
+		// Capture the key string once for comparison
+		key := kmsg.String()
+
+		switch key {
 		case "esc":
 			m.state = stateNav
 			return m, nil
@@ -413,45 +466,54 @@ func (m *model) handleForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.inputs[m.focusIndex].Blur()
 			m.focusIndex = (m.focusIndex + 1) % len(m.inputs)
 			m.inputs[m.focusIndex].Focus()
-		case "enter", "ctrl+s":
-			// --- DATABASE EXECUTION ---
+			return m, nil
+		case "enter", "ctrl+s": // <--- TRIGGER ON BOTH
+			var query string
+			var args []interface{}
+			var err error
+
 			if m.state == stateEdit {
-				query := "UPDATE inventory SET name = ?"
-				args := []interface{}{m.inputs[0].Value()}
+				query = "UPDATE inventory SET name = ?"
+				args = []interface{}{m.inputs[0].Value()}
 				for i := 1; i < len(m.inputs); i++ {
 					query += fmt.Sprintf(", [%s] = ?", m.fieldNames[i])
 					args = append(args, m.inputs[i].Value())
 				}
 				query += " WHERE id = ?"
 				args = append(args, m.editTargetID)
-				m.db.Exec(query, args...)
 			} else {
-				// Ensure this block executes for stateAdd
 				cols := "name"
 				vals := "?"
-				args := []interface{}{m.inputs[0].Value()}
+				args = []interface{}{m.inputs[0].Value()}
 				for i := 1; i < len(m.inputs); i++ {
 					cols += fmt.Sprintf(", [%s]", m.fieldNames[i])
 					vals += ", ?"
 					args = append(args, m.inputs[i].Value())
 				}
-				m.db.Exec(fmt.Sprintf("INSERT INTO inventory (%s) VALUES (%s)", cols, vals), args...)
+				query = fmt.Sprintf("INSERT INTO inventory (%s) VALUES (%s)", cols, vals)
 			}
 
-			m.refreshData() // Refresh to show new/updated data
+			_, err = m.db.Exec(query, args...)
+			if err != nil {
+				return m, m.setStatus("DB Error: " + err.Error())
+			}
 
-			// --- STATE MANAGEMENT ---
-			if kmsg.String() == "ctrl+s" {
-				m.resetInputs() // Clear for next item
-				m.inputs[0].Focus()
-				// Use setStatus to show feedback for 3 seconds
+			m.refreshData()
+
+			// --- THE "SAVE & ADD ANOTHER" BRANCH ---
+			if key == "ctrl+s" {
+				m.resetInputs()     // Clears the text boxes
+				m.inputs[0].Focus() // Resets focus to the top field
+				// Return the status command to show the success message
 				return m, m.setStatus("Item Saved! Ready for next...")
 			}
 
-			m.state = stateNav // Standard 'Enter' returns to table
-			return m, nil
+			// Standard "Enter" behavior
+			m.state = stateNav
+			return m, m.setStatus("Item Saved")
 		}
 	}
+
 	m.inputs[m.focusIndex], cmd = m.inputs[m.focusIndex].Update(msg)
 	return m, cmd
 }
@@ -465,8 +527,11 @@ func (m *model) handleSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+
 	m.inputs[0], cmd = m.inputs[0].Update(msg)
 	searchTerm := m.inputs[0].Value()
+
+	var matchedItems []Item
 	var targets []string
 	for _, item := range m.inventory {
 		searchStr := item.Name
@@ -475,13 +540,20 @@ func (m *model) handleSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		targets = append(targets, searchStr)
 	}
+
 	matches := fuzzy.Find(searchTerm, targets)
+
+	// Get the current custom columns list
 	_, customCols, _ := GetInventory(m.db)
-	var newRows []table.Row
+
+	// Build a slice of ONLY the items that matched the search
 	for _, match := range matches {
-		newRows = append(newRows, m.inventory[match.Index].ToRow(customCols))
+		matchedItems = append(matchedItems, m.inventory[match.Index])
 	}
-	m.table.SetRows(newRows)
+
+	// USE itemsToRows TO GENERATE THE DATA CORRECTLY
+	m.table.SetRows(m.itemsToRows(matchedItems, customCols))
+
 	return m, cmd
 }
 
@@ -630,17 +702,48 @@ func (m *model) handleImportPath(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.resetToNav()
 			return m, nil
-		case "enter":
-			count, err := m.importFromCSV(m.inputs[0].Value())
-			if err != nil {
-				m.statusMsg = fmt.Sprintf("Error: %v", err)
+		case "enter", "ctrl+s": // Catch both keys here
+			var query string
+			var args []interface{}
+			var err error
+
+			if m.state == stateEdit {
+				query = "UPDATE inventory SET name = ?"
+				args = []interface{}{m.inputs[0].Value()}
+				for i := 1; i < len(m.inputs); i++ {
+					query += fmt.Sprintf(", [%s] = ?", m.fieldNames[i])
+					args = append(args, m.inputs[i].Value())
+				}
+				query += " WHERE id = ?"
+				args = append(args, m.editTargetID)
 			} else {
-				m.statusMsg = fmt.Sprintf("Successfully imported %d items!", count)
+				cols := "name"
+				vals := "?"
+				args = []interface{}{m.inputs[0].Value()}
+				for i := 1; i < len(m.inputs); i++ {
+					cols += fmt.Sprintf(", [%s]", m.fieldNames[i])
+					vals += ", ?"
+					args = append(args, m.inputs[i].Value())
+				}
+				query = fmt.Sprintf("INSERT INTO inventory (%s) VALUES (%s)", cols, vals)
 			}
-			m.initDynamicInputs() // Refresh field list in case new ones were added
+
+			_, err = m.db.Exec(query, args...)
+			if err != nil {
+				return m, m.setStatus("DB Error: " + err.Error())
+			}
+
 			m.refreshData()
+
+			// --- THE "SAVE & ADD ANOTHER" LOGIC ---
+			if kmsg.String() == "ctrl+s" {
+				m.resetInputs()     // Clear the text boxes
+				m.inputs[0].Focus() // Put cursor back at the top
+				return m, m.setStatus("Item Saved! Add another...")
+			}
+
 			m.state = stateNav
-			return m, nil
+			return m, m.setStatus("Item Saved")
 		}
 	}
 	m.inputs[0], cmd = m.inputs[0].Update(msg)
@@ -705,13 +808,14 @@ func (m *model) renderHelp() string {
     KEYBOARD SHORTCUTS
     ------------------
     [/]      Search Items
-    [N] Add New Item
-    [E] Edit Selected Item
-    [X] Delete Selected Item
+    [N]      Add New Item
+	 -  [ctrl+s]   Save & Create
+    [E]      Edit Selected Item
+    [X]      Delete Selected Item
 
-    [F] Field Manager
-    [I] Import CSV from 'import.csv'
-    [P] Export to CSV
+    [F]      Field Manager
+    [I]      Import CSV from 'import.csv'
+    [P]      Export to CSV
 
     [?]      Toggle Help
     [esc]    Back / Reset
@@ -741,11 +845,13 @@ func (m *model) getSelectedIDs() []string {
 
 func (m *model) resetToNav() {
 	m.state = stateNav
+	m.focusIndex = 0
+	m.editTargetID = ""
+	m.deleteTargetID = ""
 	for i := range m.inputs {
 		m.inputs[i].Blur()
-		m.inputs[i].SetValue("")
 	}
-	m.refreshData() // This ensures the table shows everything again
+	m.refreshData()
 }
 
 func (m *model) renderForm() string {
@@ -757,7 +863,7 @@ func (m *model) renderForm() string {
 		}
 		b.WriteString(fmt.Sprintf("  %s\n  %s\n\n", label, m.inputs[i].View()))
 	}
-	b.WriteString("\n  [tab] cycle • [enter] save • [ctrl+s] save & another • [esc] cancel")
+	b.WriteString("\n  [tab] cycle • [enter] save • [ctrl+s] save & create • [esc] cancel")
 	return b.String()
 }
 
@@ -821,17 +927,29 @@ func (m *model) exportToCSV(filename string) error {
 		return err
 	}
 	defer file.Close()
+
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
 
-	headers := []string{"ID", "Name"}
-	headers = append(headers, m.fieldNames[1:]...)
+	// 1. Create Headers: ID, Name, Qty, then Custom Fields
+	headers := []string{"ID", "Name", "Qty"}
+	_, customCols, _ := GetInventory(m.db)
+	for _, col := range customCols {
+		if col != "id" && col != "name" && col != "qty" {
+			headers = append(headers, col)
+		}
+	}
 	writer.Write(headers)
 
+	// 2. Write Data Rows
 	for _, item := range m.inventory {
-		row := []string{item.ID, item.Name}
-		for _, field := range m.fieldNames[1:] {
-			row = append(row, item.Values[field])
+		row := []string{
+			item.ID,
+			item.Name,
+			item.Qty,
+		}
+		for _, col := range headers[3:] { // Custom fields start at index 3
+			row = append(row, item.Values[col])
 		}
 		writer.Write(row)
 	}
@@ -850,50 +968,44 @@ func (m *model) importFromCSV(filename string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-
 	if len(records) < 2 {
-		return 0, fmt.Errorf("CSV file is empty")
+		return 0, fmt.Errorf("CSV is empty")
 	}
 
 	headers := records[0]
-	// 1. Ensure all columns in CSV exist in DB
-	for _, header := range headers {
-		if strings.ToLower(header) == "id" || strings.ToLower(header) == "name" {
-			continue
+	// Pre-check: Ensure custom columns exist in DB
+	for _, h := range headers {
+		lowH := strings.ToLower(h)
+		if lowH != "id" && lowH != "name" && lowH != "qty" {
+			AddCustomField(m.db, h) // Creates column if missing
 		}
-		// AddCustomField ignores if already exists due to UNIQUE constraint
-		AddCustomField(m.db, header)
 	}
 
-	// 2. Insert records
 	count := 0
 	for _, record := range records[1:] {
-		cols := "name"
-		placeholders := "?"
-		var nameVal string
-		var args []interface{}
+		cols := []string{}
+		placeholders := []string{}
+		args := []interface{}{}
 
-		// Map record values to headers
-		valMap := make(map[string]string)
 		for i, val := range record {
-			if i < len(headers) {
-				h := headers[i]
-				if strings.ToLower(h) == "name" {
-					nameVal = val
-				} else if strings.ToLower(h) != "id" {
-					valMap[h] = val
-				}
+			if i >= len(headers) {
+				break
 			}
+			header := strings.ToLower(headers[i])
+
+			if header == "id" {
+				continue
+			} // Let SQLite handle ID
+
+			cols = append(cols, fmt.Sprintf("[%s]", headers[i]))
+			placeholders = append(placeholders, "?")
+			args = append(args, val)
 		}
 
-		args = append(args, nameVal)
-		for k, v := range valMap {
-			cols += fmt.Sprintf(", [%s]", k)
-			placeholders += ", ?"
-			args = append(args, v)
-		}
+		query := fmt.Sprintf("INSERT INTO inventory (%s) VALUES (%s)",
+			strings.Join(cols, ", "),
+			strings.Join(placeholders, ", "))
 
-		query := fmt.Sprintf("INSERT INTO inventory (%s) VALUES (%s)", cols, placeholders)
 		_, err := m.db.Exec(query, args...)
 		if err == nil {
 			count++
@@ -903,26 +1015,29 @@ func (m *model) importFromCSV(filename string) (int, error) {
 }
 
 func (m *model) initDynamicInputs() {
-	m.fieldNames = []string{"Name"}
-	rows, _ := m.db.Query("SELECT name FROM field_definitions ORDER BY id ASC")
-	for rows.Next() {
-		var name string
-		rows.Scan(&name)
-		m.fieldNames = append(m.fieldNames, name)
-	}
-	rows.Close()
+	// 1. Always start with Name and Qty
+	m.fieldNames = []string{"Name", "Qty"}
 
+	// 2. Fetch custom fields from DB
+	_, customCols, _ := GetInventory(m.db)
+	for _, c := range customCols {
+		if c != "id" && c != "name" && c != "qty" {
+			m.fieldNames = append(m.fieldNames, c)
+		}
+	}
+
+	// 3. Create inputs for every field name
 	m.inputs = make([]textinput.Model, len(m.fieldNames))
 	for i, name := range m.fieldNames {
 		t := textinput.New()
 		t.Placeholder = name
-		// Ensure the first input is ready to receive text
 		if i == 0 {
 			t.Focus()
 		}
 		m.inputs[i] = t
 	}
 }
+
 func (i Item) ToRow(customCols []string) table.Row {
 	row := table.Row{i.ID, i.Name}
 	for _, colName := range customCols {
@@ -978,32 +1093,27 @@ func main() {
 	}
 	defer db.Close()
 
-	// 1. Initial Data Load
-	items, customCols, _ := GetInventory(db)
-
-	// 2. Setup Table
-	tableCols := []table.Column{{Title: "ID", Width: 4}, {Title: "Name", Width: 30}}
-	for _, col := range customCols {
-		tableCols = append(tableCols, table.Column{Title: col, Width: 15})
-	}
-
-	t := table.New(table.WithColumns(tableCols), table.WithFocused(true), table.WithHeight(10))
-
-	// 3. Setup Model
-	m := &model{
+	// 1. Create a "Skeleton" model
+	m := model{
 		db:           db,
-		table:        t,
-		inventory:    items,
-		selectedRows: make(map[string]bool),
 		state:        stateNav,
+		selectedRows: make(map[string]bool),
+		// Initialize table with empty columns/rows to start
+		table: table.New(
+			table.WithFocused(true),
+			table.WithHeight(10),
+		),
 	}
 
-	// 4. Initialize dynamic components
-	m.initDynamicInputs()
+	// 2. Use refreshData to correctly size columns and rows based on DB
 	m.refreshData()
 
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	// 3. Initialize the inputs for the Add/Edit forms
+	m.initDynamicInputs()
+
+	p := tea.NewProgram(&m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
-		fmt.Printf("Error: %v", err)
+		fmt.Printf("Alas, there's been an error: %v", err)
+		os.Exit(1)
 	}
 }
