@@ -154,13 +154,13 @@ func (m *model) handleNav(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.refreshData()
 			}
 			return m, nil
-
-		case "/": // Search
+		case "/":
 			m.state = stateSearch
-			m.inputs[0].Focus()
 			m.inputs[0].SetValue("")
+			m.inputs[0].Focus()
+			// Disable prompt symbols so it looks clean in the bar
+			m.inputs[0].Prompt = ""
 			return m, nil
-
 		case "n", "N": // Add New
 			m.state = stateAdd
 			m.resetInputs()
@@ -230,18 +230,13 @@ func (m *model) View() string {
 		return "Initializing..."
 	}
 
-	// 1. Header (Flat style like RIP-GO)
-	header := lipgloss.NewStyle().
-		Foreground(purple).
-		Bold(true).
-		Margin(1, 0, 1, 2).
-		Render("GLIMS") +
-		lipgloss.NewStyle().Foreground(comment).Render(fmt.Sprintf(" v1.1.0 [%s]", strings.ToUpper(m.getStatusText())))
+	// 1. Header
+	header := lipgloss.NewStyle().Foreground(purple).Bold(true).Margin(1, 0, 1, 2).Render("GLIMS-GO") +
+		lipgloss.NewStyle().Foreground(comment).Render(fmt.Sprintf(" v0.1.0 [%s]", strings.ToUpper(m.getStatusText())))
 
+	// 2. Main Content
 	var content string
 	switch m.state {
-	case stateSearch:
-		content = " / " + m.inputs[0].View() + "\n" + m.renderTable()
 	case stateAdd, stateEdit:
 		content = m.renderForm()
 	case stateHelp:
@@ -251,25 +246,40 @@ func (m *model) View() string {
 	case stateAddField, stateFieldRename, stateDeleteFieldConfirm:
 		content = m.renderFieldManager()
 	case stateExportRename, stateImportPath:
-		content = " File Path: " + m.inputs[0].View()
+		label := " FILE PATH: "
+		content = lipgloss.NewStyle().Background(yellow).Foreground(background).Render(label) + " " + m.inputs[0].View()
 	default:
+		// Search results are rendered directly into the table in handleSearch
 		content = m.renderTable()
 	}
 
-	// Apply a small margin to the content so it's not touching the edge
 	styledContent := lipgloss.NewStyle().Margin(0, 2).Render(content)
 
-	// 3. Footer (The single-line legend)
-	footer := m.renderFooter()
+	// 3. The Dynamic "High-Contrast" Bar
+	var bar string
+	barStyle := lipgloss.NewStyle().Foreground(background).Padding(0, 1).Margin(0, 2).Bold(true)
 
-	// 4. Fill the vertical space to push footer to the bottom
-	bodyHeight := lipgloss.Height(header) + lipgloss.Height(styledContent) + lipgloss.Height(footer)
+	if m.state == stateSearch {
+		// YELLOW SEARCH BAR
+		bar = barStyle.Background(yellow).Render(" SEARCH: " + m.inputs[0].View())
+	} else if m.state == stateNav && len(m.table.SelectedRow()) > 0 {
+		// PURPLE INFO BAR
+		row := m.table.SelectedRow()
+		// row[0] = ID, row[1] = Name, row[2] = Qty
+		info := fmt.Sprintf(" ITEM: %s  |  %s  |  QTY: %s ", row[0], row[1], row[2])
+		bar = barStyle.Background(purple).Render(info)
+	}
+
+	// 4. Footer & Padding
+	footer := m.renderFooter()
+	bodyHeight := lipgloss.Height(header) + lipgloss.Height(styledContent) + lipgloss.Height(bar) + lipgloss.Height(footer)
+
 	padding := ""
 	if m.height > bodyHeight {
 		padding = strings.Repeat("\n", m.height-bodyHeight)
 	}
 
-	return header + "\n" + styledContent + padding + footer
+	return header + "\n" + styledContent + padding + bar + "\n" + footer
 }
 
 // --- DATABASE & HELPERS ---
@@ -551,10 +561,12 @@ func (m *model) handleForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *model) handleSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
+
 	if kmsg, ok := msg.(tea.KeyMsg); ok {
-		if kmsg.String() == "esc" || kmsg.String() == "enter" {
+		switch kmsg.String() {
+		case "esc", "enter":
 			m.state = stateNav
-			m.refreshData()
+			m.refreshData() // Reset table to full view
 			return m, nil
 		}
 	}
@@ -562,26 +574,33 @@ func (m *model) handleSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.inputs[0], cmd = m.inputs[0].Update(msg)
 	searchTerm := m.inputs[0].Value()
 
-	// --- FIX: GET THE MISSING VARIABLES ---
-	items, customCols, _ := GetInventory(m.db)
-	// --------------------------------------
-
-	var matchedItems []Item
+	// 1. Prepare search targets (combine all field values for each item)
 	var targets []string
-	for _, item := range items {
-		searchStr := item.Name
-		for _, v := range item.Values {
-			searchStr += " " + v
+	for _, item := range m.inventory {
+		searchStr := item.Name + " " + item.Qty
+		for _, val := range item.Values {
+			searchStr += " " + val
 		}
 		targets = append(targets, searchStr)
 	}
 
+	// 2. Perform fuzzy find
 	matches := fuzzy.Find(searchTerm, targets)
+
+	// 3. Reconstruct rows for matches
+	var matchedItems []Item
 	for _, match := range matches {
-		matchedItems = append(matchedItems, items[match.Index])
+		matchedItems = append(matchedItems, m.inventory[match.Index])
 	}
 
-	m.table.SetRows(m.itemsToRows(matchedItems, customCols))
+	// 4. Update the table display
+	_, customCols, _ := GetInventory(m.db)
+	if searchTerm == "" {
+		m.table.SetRows(m.itemsToRows(m.inventory, customCols))
+	} else {
+		m.table.SetRows(m.itemsToRows(matchedItems, customCols))
+	}
+
 	return m, cmd
 }
 
