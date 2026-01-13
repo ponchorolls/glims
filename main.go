@@ -231,7 +231,7 @@ func (m *model) View() string {
 	}
 
 	// 1. Header
-	header := lipgloss.NewStyle().Foreground(purple).Bold(true).Margin(1, 0, 1, 2).Render("GLIMS-GO") +
+	header := lipgloss.NewStyle().Foreground(purple).Bold(true).Margin(1, 0, 1, 2).Render("GLIMS") +
 		lipgloss.NewStyle().Foreground(comment).Render(fmt.Sprintf(" v0.1.0 [%s]", strings.ToUpper(m.getStatusText())))
 
 	// 2. Main Content
