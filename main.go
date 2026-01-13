@@ -157,6 +157,8 @@ func (m *model) handleNav(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "/":
 			m.state = stateSearch
 			m.inputs[0].SetValue("")
+			m.inputs[0].PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#44475A"))
+			m.inputs[0].Placeholder = "type to filter..."
 			m.inputs[0].Focus()
 			// Disable prompt symbols so it looks clean in the bar
 			m.inputs[0].Prompt = ""
@@ -261,7 +263,21 @@ func (m *model) View() string {
 
 	if m.state == stateSearch {
 		// YELLOW SEARCH BAR
-		bar = barStyle.Background(yellow).Render(" SEARCH: " + m.inputs[0].View())
+		matchCount := len(m.table.Rows()) // or len(m.table.Rows())
+
+		searchText := " SEARCH: " + m.inputs[0].View()
+		countText := fmt.Sprintf(" MATCHES: %d ", matchCount)
+
+		// Calculate how much space to put between search query and the count
+		// Subtract margins and text lengths from total width
+		spaceCount := m.width - lipgloss.Width(searchText) - lipgloss.Width(countText) - 6
+		if spaceCount < 0 {
+			spaceCount = 1
+		}
+		gap := strings.Repeat(" ", spaceCount)
+
+		bar = barStyle.Background(yellow).Render(searchText + gap + countText)
+
 	} else if m.state == stateNav && len(m.table.SelectedRow()) > 0 {
 		// PURPLE INFO BAR
 		row := m.table.SelectedRow()
@@ -1042,6 +1058,25 @@ func (m *model) initDynamicInputs() {
 		if i == 0 {
 			t.Focus()
 		}
+		m.inputs[i] = t
+	}
+
+	m.inputs = make([]textinput.Model, len(customCols)+2) // Name + Qty + Custom
+
+	for i := range m.inputs {
+		t := textinput.New()
+		t.Cursor.Style = lipgloss.NewStyle().Foreground(purple)
+
+		// --- ADD THIS LINE ---
+		t.Width = 20 // Set a visible window of 30 characters
+		// --------------------
+
+		if i == 0 {
+			t.Placeholder = "Name"
+		} else if i == 1 {
+			t.Placeholder = "Quantity"
+		}
+		// ...
 		m.inputs[i] = t
 	}
 }
