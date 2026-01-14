@@ -296,32 +296,43 @@ func (m *model) View() string {
 			}
 		}
 
-		row := m.table.SelectedRow()
-		if len(row) > 0 {
-			// --- NEW DYNAMIC BACKGROUND LOGIC ---
-			// Extract the quantity from the row (index 2)
-			var qVal int
-			fmt.Sscanf(row[2], "%d", &qVal)
+		// 1. Get the cursor index from the table
+		cursor := m.table.Cursor()
 
-			// Determine background color based on stock level
-			statusColor := purple // Default
-			if qVal >= 30 {
-				statusColor = green
-			} else if qVal >= 10 {
-				statusColor = orange
-			} else {
-				statusColor = red
+		// 2. Safety check: make sure the cursor is within bounds of our inventory
+		if cursor >= 0 && cursor < len(m.inventory) {
+			item := m.inventory[cursor]
+
+			// 3. Get current Qty
+			var qVal int
+			fmt.Sscanf(item.Qty, "%d", &qVal)
+
+			// 4. Set Default Thresholds
+			highTarget := 30
+			lowTarget := 10
+
+			// 5. Scan the Item's Values map directly (much safer than row indexes!)
+			if val, ok := item.Values["green"]; ok && strings.TrimSpace(val) != "" {
+				fmt.Sscanf(val, "%d", &highTarget)
 			}
-			// ------------------------------------
+			if val, ok := item.Values["orange"]; ok && strings.TrimSpace(val) != "" {
+				fmt.Sscanf(val, "%d", &lowTarget)
+			}
+
+			// 6. Logic for background color
+			statusColor := red
+			if qVal >= highTarget {
+				statusColor = green
+			} else if qVal >= lowTarget {
+				statusColor = orange
+			}
 
 			var info string
 			if selectedCount > 1 {
-				info = fmt.Sprintf(" SELECTED: %d ITEMS  |  CURRENT: %s ", selectedCount, row[1])
+				info = fmt.Sprintf(" SELECTED: %d ITEMS | CURRENT: %s ", selectedCount, item.Name)
 			} else {
-				info = fmt.Sprintf(" ITEM: %s  |  %s  |  QTY: %s ", row[0], row[1], row[2])
+				info = fmt.Sprintf(" ITEM: %s | QTY: %s | THRESHOLDS: G:%d O:%d ", item.Name, item.Qty, highTarget, lowTarget)
 			}
-
-			// Render the bar with the dynamic statusColor
 			bar = barStyle.Background(statusColor).Render(info)
 		}
 	}
@@ -482,15 +493,17 @@ func (m *model) itemsToRows(items []Item, customCols []string) []table.Row {
 			prefix = "● "
 		}
 
-		// Ensure these match the 'cols' slice in refreshData exactly
 		row := table.Row{
 			item.ID,
 			prefix + item.Name,
-			fmt.Sprintf("%s", item.Qty), // Convert int Qty to string
+			item.Qty,
 		}
 
+		// Only append values for columns that aren't "Green" or "Orange"
 		for _, colName := range customCols {
-			if colName == "id" || colName == "name" || colName == "qty" {
+			lower := strings.ToLower(colName)
+			if lower == "id" || lower == "name" || lower == "qty" ||
+				lower == "green" || lower == "orange" {
 				continue
 			}
 			row = append(row, item.Values[colName])
@@ -546,16 +559,16 @@ func (m *model) refreshData() {
 		{Title: "NAME", Width: nameWidth},
 		{Title: "QTY", Width: 8},
 	}
-	for _, colName := range customCols {
-		if colName != "id" && colName != "name" && colName != "qty" {
-			cols = append(cols, table.Column{
-				Title: strings.ToUpper(colName),
-				Width: perFieldWidth,
-			})
+	for _, col := range customCols {
+		// Skip system-reserved columns from the TABLE view
+		lowerCol := strings.ToLower(col)
+		if lowerCol == "id" || lowerCol == "name" || lowerCol == "qty" ||
+			lowerCol == "green" || lowerCol == "orange" {
+			continue
 		}
+		cols = append(cols, table.Column{Title: strings.ToUpper(col), Width: 15})
 	}
 
-	// 4. Update Columns first, then populate with new Row data
 	m.table.SetColumns(cols)
 	m.table.SetRows(m.itemsToRows(items, customCols))
 }
