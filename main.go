@@ -43,19 +43,20 @@ type Item struct {
 }
 
 type model struct {
-	table          table.Model
-	inputs         []textinput.Model
-	fieldNames     []string
-	inventory      []Item
-	db             *sql.DB
-	state          sessionState
-	focusIndex     int
-	editTargetID   string
-	deleteTargetID string
-	width          int
-	height         int
-	statusMsg      string
-	selectedRows   map[string]bool
+	table             table.Model
+	inputs            []textinput.Model
+	fieldNames        []string
+	inventory         []Item
+	db                *sql.DB
+	state             sessionState
+	focusIndex        int
+	editTargetID      string
+	deleteTargetID    string
+	width             int
+	height            int
+	statusMsg         string
+	selectedRows      map[string]bool
+	lastSelectedIndex int
 }
 
 // --- STYLING ---
@@ -147,10 +148,20 @@ func (m *model) handleNav(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = stateHelp
 			return m, nil
 
-		case " ": // Toggle Selection
+		case "s": // Regular Space: Toggle and set Anchor
+			currRow := m.table.SelectedRow()
 			if len(currRow) > 0 {
 				id := currRow[0]
 				m.selectedRows[id] = !m.selectedRows[id]
+				m.lastSelectedIndex = m.table.Cursor() // Set the anchor
+				m.refreshData()
+			}
+			return m, nil
+
+		case "shift+s", "S": // Shift+Space: Select Range
+			currRow := m.table.SelectedRow()
+			if len(currRow) > 0 {
+				m.selectRange(m.table.Cursor())
 				m.refreshData()
 			}
 			return m, nil
@@ -258,32 +269,45 @@ func (m *model) View() string {
 	styledContent := lipgloss.NewStyle().Margin(0, 2).Render(content)
 
 	// 3. The Dynamic "High-Contrast" Bar
+	// 3. The Dynamic "High-Contrast" Bar
 	var bar string
 	barStyle := lipgloss.NewStyle().Foreground(background).Padding(0, 1).Margin(0, 2).Bold(true)
 
 	if m.state == stateSearch {
-		// YELLOW SEARCH BAR
-		matchCount := len(m.table.Rows()) // or len(m.table.Rows())
-
+		// ... (Keep your Yellow Search Bar logic here)
+		matchCount := len(m.table.Rows())
 		searchText := " SEARCH: " + m.inputs[0].View()
 		countText := fmt.Sprintf(" MATCHES: %d ", matchCount)
-
-		// Calculate how much space to put between search query and the count
-		// Subtract margins and text lengths from total width
 		spaceCount := m.width - lipgloss.Width(searchText) - lipgloss.Width(countText) - 6
 		if spaceCount < 0 {
 			spaceCount = 1
 		}
 		gap := strings.Repeat(" ", spaceCount)
-
 		bar = barStyle.Background(yellow).Render(searchText + gap + countText)
 
-	} else if m.state == stateNav && len(m.table.SelectedRow()) > 0 {
-		// PURPLE INFO BAR
+	} else if m.state == stateNav {
+		// --- UPDATED PURPLE BAR LOGIC ---
+
+		// 1. Calculate how many items are currently selected
+		selectedCount := 0
+		for _, isSelected := range m.selectedRows {
+			if isSelected {
+				selectedCount++
+			}
+		}
+
 		row := m.table.SelectedRow()
-		// row[0] = ID, row[1] = Name, row[2] = Qty
-		info := fmt.Sprintf(" ITEM: %s  |  %s  |  QTY: %s ", row[0], row[1], row[2])
-		bar = barStyle.Background(purple).Render(info)
+		if len(row) > 0 {
+			var info string
+			if selectedCount > 1 {
+				// If multiple items are selected, show the bulk count
+				info = fmt.Sprintf(" SELECTED: %d ITEMS  |  CURRENT: %s ", selectedCount, row[1])
+			} else {
+				// Otherwise, show the standard single item detail
+				info = fmt.Sprintf(" ITEM: %s  |  %s  |  QTY: %s ", row[0], row[1], row[2])
+			}
+			bar = barStyle.Background(purple).Render(info)
+		}
 	}
 
 	// 4. Footer & Padding
@@ -357,17 +381,43 @@ func GetInventory(db *sql.DB) ([]Item, []string, error) {
 	return items, customCols, nil
 }
 
+func (m *model) selectRange(currentIndex int) {
+	start := m.lastSelectedIndex
+	end := currentIndex
+
+	// Ensure start is the smaller number for the loop
+	if start > end {
+		start, end = end, start
+	}
+
+	// Get the state of the anchor row to apply it to the range
+	// (e.g., if you select the anchor, Shift+Space selects the whole range)
+	rows := m.table.Rows()
+	if start < 0 || end >= len(rows) {
+		return
+	}
+
+	anchorID := rows[m.lastSelectedIndex][0]
+	targetState := m.selectedRows[anchorID]
+
+	for i := start; i <= end; i++ {
+		id := rows[i][0]
+		m.selectedRows[id] = targetState
+	}
+}
+
 func (m *model) renderFooter() string {
 	style := lipgloss.NewStyle().Foreground(comment).Margin(0, 2)
 
 	// Format: key label • key label
 	commands := []string{
-		"↑↓ navigate",
-		"Space select",
+		"esc reset",
+		"↑↓ nav",
+		"s/S select/bulk",
 		"N add",
 		"E edit",
-		"X delete",
-		"/ filter",
+		"X del",
+		"/ search",
 		"P export",
 		"I import",
 		"q quit",
@@ -510,67 +560,97 @@ func (m *model) renderTable() string {
 }
 
 func (m *model) handleForm(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-	if kmsg, ok := msg.(tea.KeyMsg); ok {
-		// Capture the key string once for comparison
-		key := kmsg.String()
+	kmsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
 
-		switch key {
-		case "esc":
-			m.state = stateNav
-			return m, nil
-		case "tab", "down":
-			m.inputs[m.focusIndex].Blur()
-			m.focusIndex = (m.focusIndex + 1) % len(m.inputs)
-			m.inputs[m.focusIndex].Focus()
-			return m, nil
-		case "enter", "ctrl+s": // <--- TRIGGER ON BOTH
-			var query string
-			var args []interface{}
-			var err error
+	// Define the key string for easier use
+	keyStr := kmsg.String()
 
-			if m.state == stateEdit {
-				query = "UPDATE inventory SET name = ?"
-				args = []interface{}{m.inputs[0].Value()}
-				for i := 1; i < len(m.inputs); i++ {
+	switch keyStr {
+	case "esc":
+		m.state = stateNav
+		return m, nil
+	case "tab", "down":
+		m.inputs[m.focusIndex].Blur()
+		m.focusIndex = (m.focusIndex + 1) % len(m.inputs)
+		m.inputs[m.focusIndex].Focus()
+		return m, nil
+	case "up":
+		m.inputs[m.focusIndex].Blur()
+		m.focusIndex--
+		if m.focusIndex < 0 {
+			m.focusIndex = len(m.inputs) - 1
+		}
+		m.inputs[m.focusIndex].Focus()
+		return m, nil
+	case "enter", "ctrl+s":
+		var query string
+		var args []interface{}
+		var err error
+
+		// Determine if this was a Save & Add session
+		isCtrlS := keyStr == "ctrl+s"
+
+		// 1. Validate input
+		if strings.TrimSpace(m.inputs[0].Value()) == "" {
+			return m, m.setStatus("Error: Name cannot be empty")
+		}
+
+		// 2. Database Logic
+		if m.state == stateEdit {
+			// UPDATE Existing Item
+			query = "UPDATE inventory SET name = ?"
+			args = []interface{}{m.inputs[0].Value()}
+			// Start loop at 1 to match fieldNames (Name is 0, Qty is 1, etc.)
+			for i := 1; i < len(m.inputs); i++ {
+				if i < len(m.fieldNames) {
 					query += fmt.Sprintf(", [%s] = ?", m.fieldNames[i])
 					args = append(args, m.inputs[i].Value())
 				}
-				query += " WHERE id = ?"
-				args = append(args, m.editTargetID)
-			} else {
-				cols := "name"
-				vals := "?"
-				args = []interface{}{m.inputs[0].Value()}
-				for i := 1; i < len(m.inputs); i++ {
+			}
+			query += " WHERE id = ?"
+			args = append(args, m.editTargetID)
+		} else {
+			// INSERT New Item
+			cols := "name"
+			vals := "?"
+			args = []interface{}{m.inputs[0].Value()}
+			for i := 1; i < len(m.inputs); i++ {
+				if i < len(m.fieldNames) {
 					cols += fmt.Sprintf(", [%s]", m.fieldNames[i])
 					vals += ", ?"
 					args = append(args, m.inputs[i].Value())
 				}
-				query = fmt.Sprintf("INSERT INTO inventory (%s) VALUES (%s)", cols, vals)
 			}
-
-			_, err = m.db.Exec(query, args...)
-			if err != nil {
-				return m, m.setStatus("DB Error: " + err.Error())
-			}
-
-			m.refreshData()
-
-			// --- THE "SAVE & ADD ANOTHER" BRANCH ---
-			if key == "ctrl+s" {
-				m.resetInputs()     // Clears the text boxes
-				m.inputs[0].Focus() // Resets focus to the top field
-				// Return the status command to show the success message
-				return m, m.setStatus("Item Saved! Ready for next...")
-			}
-
-			// Standard "Enter" behavior
-			m.state = stateNav
-			return m, m.setStatus("Item Saved")
+			query = fmt.Sprintf("INSERT INTO inventory (%s) VALUES (%s)", cols, vals)
 		}
+
+		// Execute directly using the model's DB connection
+		_, err = m.db.Exec(query, args...)
+		if err != nil {
+			return m, m.setStatus("DB Error: " + err.Error())
+		}
+
+		// 3. Refresh and State Guard
+		m.refreshData()
+
+		// If ctrl+s was used while ADDING, stay in form and clear fields
+		if isCtrlS && m.state == stateAdd {
+			m.resetInputs()
+			m.inputs[0].Focus()
+			return m, m.setStatus("Item Added! Ready for next...")
+		}
+
+		// In all other cases (Enter or ctrl+s while editing), go back to list
+		m.state = stateNav
+		m.table.Focus()
+		return m, m.setStatus("Changes Saved")
 	}
 
+	// Update the focused input with the key message
+	var cmd tea.Cmd
 	m.inputs[m.focusIndex], cmd = m.inputs[m.focusIndex].Update(msg)
 	return m, cmd
 }
@@ -827,19 +907,25 @@ func (m *model) renderHelp() string {
 	return `
     KEYBOARD SHORTCUTS
     ------------------
-    [/]      Search Items
-    [N]      Add New Item
-	 -  [ctrl+s]   Save & Create
-    [E]      Edit Selected Item
-    [X]      Delete Selected Item
-
-    [F]      Field Manager
-    [I]      Import CSV from 'import.csv'
-    [P]      Export to CSV
+    [ MAIN SCREEN ] 
 
     [?]      Toggle Help
     [esc]    Back / Reset
     [q]      Quit
+    [/]      Search Items
+    [N]      Add New Item
+	 -  [ctrl+s]   Save & Create
+    [E]      Edit Selected Item
+    [X]      Delete Selected Items
+    [I]      Import CSV from 'import.csv'
+    [P]      Export to CSV
+
+    [F]      [ Field Manager ]
+     -  [R]  Rename Field
+     -  [A]  Add Field
+     -  [X]  Delete Field
+     -  [Esc]  Back / Reset
+
     `
 }
 
