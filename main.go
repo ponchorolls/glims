@@ -76,6 +76,12 @@ var (
 	footerStyle = lipgloss.NewStyle().Foreground(comment).Italic(true)
 )
 
+var (
+	qtyCritical = lipgloss.NewStyle().Foreground(red).Bold(true) // 0 items
+	qtyLow      = lipgloss.NewStyle().Foreground(yellow)         // 1-5 items
+	qtyNormal   = lipgloss.NewStyle().Foreground(green)          // 6+ items
+)
+
 // --- DYNAMIC STATE COLORS ---
 var (
 	colorNav    = purple
@@ -244,8 +250,7 @@ func (m *model) View() string {
 	}
 
 	// 1. Header
-	header := lipgloss.NewStyle().Foreground(purple).Bold(true).Margin(1, 0, 1, 2).Render("GLIMS") +
-		lipgloss.NewStyle().Foreground(comment).Render(fmt.Sprintf(" v0.1.0 [%s]", strings.ToUpper(m.getStatusText())))
+	header := lipgloss.NewStyle().Foreground(purple).Bold(true).Margin(1, 0, 1, 2).Render("GLIMS - Everything you own at a GLIMS") + lipgloss.NewStyle().Foreground(comment).Render(fmt.Sprintf(" v0.1.0 [%s]", strings.ToUpper(m.getStatusText())))
 
 	// 2. Main Content
 	var content string
