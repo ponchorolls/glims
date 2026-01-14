@@ -273,8 +273,6 @@ func (m *model) View() string {
 
 	styledContent := lipgloss.NewStyle().Margin(0, 2).Render(content)
 
-	// 3. The Dynamic "High-Contrast" Bar
-	// 3. The Dynamic "High-Contrast" Bar
 	var bar string
 	barStyle := lipgloss.NewStyle().Foreground(background).Padding(0, 1).Margin(0, 2).Bold(true)
 
@@ -291,9 +289,6 @@ func (m *model) View() string {
 		bar = barStyle.Background(yellow).Render(searchText + gap + countText)
 
 	} else if m.state == stateNav {
-		// --- UPDATED PURPLE BAR LOGIC ---
-
-		// 1. Calculate how many items are currently selected
 		selectedCount := 0
 		for _, isSelected := range m.selectedRows {
 			if isSelected {
@@ -303,15 +298,31 @@ func (m *model) View() string {
 
 		row := m.table.SelectedRow()
 		if len(row) > 0 {
+			// --- NEW DYNAMIC BACKGROUND LOGIC ---
+			// Extract the quantity from the row (index 2)
+			var qVal int
+			fmt.Sscanf(row[2], "%d", &qVal)
+
+			// Determine background color based on stock level
+			statusColor := purple // Default
+			if qVal >= 30 {
+				statusColor = green
+			} else if qVal >= 10 {
+				statusColor = orange
+			} else {
+				statusColor = red
+			}
+			// ------------------------------------
+
 			var info string
 			if selectedCount > 1 {
-				// If multiple items are selected, show the bulk count
 				info = fmt.Sprintf(" SELECTED: %d ITEMS  |  CURRENT: %s ", selectedCount, row[1])
 			} else {
-				// Otherwise, show the standard single item detail
 				info = fmt.Sprintf(" ITEM: %s  |  %s  |  QTY: %s ", row[0], row[1], row[2])
 			}
-			bar = barStyle.Background(purple).Render(info)
+
+			// Render the bar with the dynamic statusColor
+			bar = barStyle.Background(statusColor).Render(info)
 		}
 	}
 
